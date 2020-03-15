@@ -27,9 +27,8 @@ def load_data(dataset, root, num_query, num_train, batch_size, num_workers):
                                                                                      batch_size,
                                                                                      num_workers,
                                                                                      )
-    elif dataset == 'nus-wide-tc21':
-        train_dataloader, query_dataloader, retrieval_dataloader = nuswide.load_data(21,
-                                                                                     root,
+    elif dataset == 'nuswide':
+        train_dataloader, query_dataloader, retrieval_dataloader = nuswide.load_data(root,
                                                                                      num_query,
                                                                                      num_train,
                                                                                      batch_size,
