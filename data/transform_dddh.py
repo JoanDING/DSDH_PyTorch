@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-
+import pdb
 
 def encode_onehot(labels, num_classes=10):
     """
@@ -43,8 +43,10 @@ def train_transform():
     Returns
         transform(torchvision.transforms): transform
     """
+
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
+
     return transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),

@@ -28,23 +28,23 @@ def load_data(root, num_query, num_train, batch_size, num_workers,
         query_dataloader, train_dataloader, retrieval_dataloader(torch.evaluate.data.DataLoader): Data loader.
     """
 
-    query_dataset = NusWideDatasetTC81(
+    query_dataset = CocoDataset(
         root,
-        'nuswide_81/test/test.txt',
+        'coco/test/test.txt',
         transform=query_transform(),
     )
 
-    train_dataset = NusWideDatasetTC81(
+    train_dataset = CocoDataset(
         root,
-        'nuswide_81/train.txt',
+        'coco/train.txt',
         transform=train_transform(),
         train=True,
         num_train=num_train,
     )
 
-    retrieval_dataset = NusWideDatasetTC81(
+    retrieval_dataset = CocoDataset(
         root,
-        'nuswide_81/test/database0.txt',
+        'coco/test/database0.txt',
         transform=query_transform(),
     )
 
@@ -71,7 +71,7 @@ def load_data(root, num_query, num_train, batch_size, num_workers,
     return query_dataloader, train_dataloader, retrieval_dataloader
 
 
-class NusWideDatasetTC81(Dataset):
+class CocoDataset(Dataset):
     """
     Nus-wide dataset, 81 classes.
 

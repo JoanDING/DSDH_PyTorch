@@ -33,20 +33,20 @@ def load_data(root, num_query, num_train, batch_size, num_workers):
     query_dataloader = DataLoader(
         query_dataset,
         batch_size=batch_size,
-        pin_memory=True,
+        pin_memory=False,
         num_workers=num_workers,
       )
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=batch_size,
-        pin_memory=True,
+        pin_memory=False,
         num_workers=num_workers,
       )
     retrieval_dataloader = DataLoader(
         retrieval_dataset,
         batch_size=batch_size,
-        pin_memory=True,
+        pin_memory=False,
         num_workers=num_workers,
     )
 

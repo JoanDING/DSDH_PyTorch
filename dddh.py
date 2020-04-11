@@ -2,14 +2,15 @@ import torch
 import torch.optim as optim
 import os
 import time
-
+import numpy as np
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from models.model_loader import load_model
 from loguru import logger
-from models.dsdh_loss import DSDHLoss
+from models.dsdh_loss import DDDHLoss
 from utils.evaluate import mean_average_precision
 from utils.dataprocess import mean_average_precision2
 
+import pdb
 
 def train(
     train_dataloader,
@@ -21,9 +22,10 @@ def train(
     device,
     lr,
     max_iter,
-    mu,
     nu,
     eta,
+    lamda,
+    weight_decay,
     topk,
     evaluate_interval,
  ):
@@ -38,7 +40,7 @@ def train(
         lr(float): Learning rate.
         max_iter: int
         Maximum iteration
-        mu, nu, eta(float): Hyper-parameters.
+        nu, eta(float): Hyper-parameters.
         topk(int): Compute mAP using top k retrieval result
         evaluate_interval(int): Evaluation interval.
 
@@ -47,49 +49,49 @@ def train(
     """
     # Construct network, optimizer, loss
     model = load_model(arch, code_length, label_length).to(device)
-    criterion = DSDHLoss(eta)
-    optimizer = optim.RMSprop(
-        model.parameters(),
-        lr=lr,
-        weight_decay=1e-5,
-    )
+    criterion = DDDHLoss(nu, eta)
+    params_to_filter = list(map(id, model.hash_layer.parameters())) + list(map(id, model.classifier.parameters()))
+    last_layers_params = list(model.hash_layer.parameters()) + list(model.classifier.parameters())
+    base_params = filter(lambda p: id(p) not in params_to_filter, model.parameters())
+    optimizer = optim.Adam([
+        {'params': base_params},
+        {'params': last_layers_params, 'lr': 10*lr, 'weight_decay': lamda}],
+            lr = lr,
+            weight_decay=weight_decay,
+            )
     scheduler = CosineAnnealingLR(optimizer, max_iter, 1e-7)
 
     # Initialize
-    N = len(train_dataloader.dataset)
-    B = torch.randn(code_length, N).sign().to(device)
-    U = torch.zeros(code_length, N).to(device)
-    train_targets = train_dataloader.dataset.get_onehot_targets().to(device)
-    S = (train_targets @ train_targets.t() > 0).float()
-    Y = train_targets.t()
     best_map = 0.
+    best_epoch = 0
     iter_time = time.time()
+    loss_all = 0
+    batch_cnt = 0
 
     for it in range(max_iter):
         model.train()
         # CNN-step
-        for data, targets, index in train_dataloader:
-            data, targets = data.to(device), targets.to(device)
+        for data1, targets1, data2, targets2, index in train_dataloader:
+            data1, targets1, data2, targets2 = data1.to(device), targets1.to(device), data2.to(device), targets2.to(device)
+            y1 = targets1.float() # batch_size, label_dim
+            y2 = targets2.float() # batch_size, label_dim
+            S = targets1.float() @ targets2.float().t() > 0 # batch_size, batch_size
             optimizer.zero_grad()
 
-            U_batch = model(data).t()
-            U[:, index] = U_batch.data
-            loss = criterion(U_batch, U, S[:, index], B[:, index])
+            f1, g1 = model(data1) # batch_size, code_len; batch_size, label_dim
+            f2, g2 = model(data2) # batch_size, code_len; batch_size, label_dim
+            f1, f2, g1, g2 = f1.float(), f2.float(), g1.float(), g2.float()
 
+            loss = criterion(f1, f2, S, y1, y2, g1, g2 )
+            loss_all += loss.cpu().data
+            batch_cnt += 1
             loss.backward()
             optimizer.step()
         scheduler.step()
 
-        # W-step
-        W = torch.inverse(B @ B.t() + nu / mu * torch.eye(code_length, device=device)) @ B @ Y.t()
-
-        # B-step
-        B = solve_dcc(W, Y, U, B, eta, mu)
-
         # Evaluate
         if it % evaluate_interval == evaluate_interval - 1:
             iter_time = time.time() - iter_time
-            epoch_loss = calc_loss(U, S, Y, W, B, mu, nu, eta)
 
             # Generate hash code
             query_code = generate_code(model, query_dataloader, code_length, device)
@@ -112,12 +114,13 @@ def train(
                     retrieval_targets.numpy(),
                     query_targets.numpy()
                     )
-
-            logger.info('[iter:{}/{}][loss:{:.2f}][map:{:.4f}][time:{:.2f}]'.format(it+1, max_iter, epoch_loss, mAP, iter_time))
+            loss_print = loss_all/batch_cnt
+            logger.info('[iter:{}/{}][loss:{:.4f}][map:{:.4f}][time:{:.2f}]'.format(it+1, max_iter, loss_print, mAP, iter_time))
 
             # Save checkpoint
             if best_map < mAP:
                 best_map = mAP
+                best_epoch = it
                 checkpoint = {
                     'qB': query_code,
                     'qL': query_targets,
@@ -127,40 +130,11 @@ def train(
                     'map': best_map,
                 }
             iter_time = time.time()
+        # early stop
+        if it - 80 > best_epoch:
+            break
 
     return checkpoint
-
-
-def solve_dcc(W, Y, U, B, eta, mu):
-    """
-    DCC.
-    """
-    for i in range(B.shape[0]):
-        P = W @ Y + eta / mu * U
-
-        p = P[i, :]
-        w = W[i, :]
-        W_prime = torch.cat((W[:i, :], W[i+1:, :]))
-        B_prime = torch.cat((B[:i, :], B[i+1:, :]))
-
-        B[i, :] = (p - B_prime.t() @ W_prime @ w).sign()
-
-    return B
-
-
-def calc_loss(U, S, Y, W, B, mu, nu, eta):
-    """
-    Compute loss.
-    """
-    theta = torch.clamp(U.t() @ U / 2, min=-100, max=50)
-    metric_loss = (torch.log(1 + torch.exp(theta)) - S * theta).sum()
-    classify_loss = ((Y - W.t() @ B) ** 2).sum()
-    regular_loss = (W ** 2).sum()
-    quantization_loss = ((B - U) ** 2).sum()
-
-    loss = (metric_loss + mu * classify_loss + nu * regular_loss + eta * quantization_loss) / S.shape[0]
-
-    return loss.item()
 
 
 def generate_code(model, dataloader, code_length, device):
@@ -181,7 +155,7 @@ def generate_code(model, dataloader, code_length, device):
         code = torch.zeros([N, code_length])
         for data, _, index in dataloader:
             data = data.to(device)
-            hash_code = model(data)
+            hash_code,_ = model(data)
             code[index, :] = hash_code.sign().cpu()
 
     model.train()
